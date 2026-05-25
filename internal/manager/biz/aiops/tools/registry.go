@@ -99,9 +99,18 @@ type Registry struct {
 	// to validate subagent_type at args-parse time. nil-safe.
 	subagentRegistry SubagentRegistry
 
+	// auditLister feeds query_change_events (HLD-013 Phase 2 — "what
+	// changed near T"). nil-safe: the tool isn't registered when unset.
+	// Wired post-construction from cmd/main.go via SetAuditLister.
+	auditLister AuditLister
+
 	log   *slog.Logger
 	tools map[string]Tool
 }
+
+// SetAuditLister wires the audit query seam consumed by
+// query_change_events. Call after NewRegistry (cmd/main.go).
+func (r *Registry) SetAuditLister(a AuditLister) { r.auditLister = a }
 
 // NewRegistry builds a Registry and auto-registers the two MVP tools
 // (get_host_load, get_process_list). When promQuery / logQuery /

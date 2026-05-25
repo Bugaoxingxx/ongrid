@@ -123,6 +123,29 @@ func (u *Usecase) List(ctx context.Context, f ListFilters) ([]model.Log, int64, 
 	return u.repo.List(ctx, f)
 }
 
+// ListChanges is the RCA-facing convenience over List (HLD-013 Phase 2):
+// returns the mutating audit rows in [from, to], optionally narrowed to a
+// resource type and/or action, capped at limit. Backs the
+// query_change_events AIOps tool's "what changed near the incident" step.
+// Failures (status=failure/denied) are intentionally included — "someone
+// tried to change X right before the symptom" is itself a root-cause lead.
+func (u *Usecase) ListChanges(ctx context.Context, from, to time.Time, resourceType, action string, limit int) ([]model.Log, error) {
+	if u == nil || u.repo == nil {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	logs, _, err := u.List(ctx, ListFilters{
+		From:         from,
+		To:           to,
+		ResourceType: resourceType,
+		Action:       action,
+		Limit:        limit,
+	})
+	return logs, err
+}
+
 // RunRetention runs the daily cleanup at the next 03:00 wall clock and
 // every 24h thereafter. retentionDays <= 0 disables the sweep entirely
 // (operator may prefer to manage retention via external archival).

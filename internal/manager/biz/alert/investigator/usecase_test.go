@@ -301,6 +301,11 @@ func TestFirstParagraphOneLine(t *testing.T) {
 		{"## Root\n\npg-replica-7 saturated", "pg-replica-7 saturated", 200},
 		{"\n\n", "", 200},
 		{"a very long line that exceeds the cap", "a very …", 8},
+		// Bold section header must be skipped (not mangled into "现象**") —
+		// land on the prose beneath. Matches the investigator's "**根因**"
+		// / "**现象**" output format.
+		{"**现象**\nPID 12345 /usr/bin/foo 吃满 CPU", "PID 12345 /usr/bin/foo 吃满 CPU", 200},
+		{"**根因（0 号病人）**\npg-replica-7 主从复制中断", "pg-replica-7 主从复制中断", 200},
 	}
 	for _, tc := range cases {
 		if got := firstParagraphOneLine(tc.in, tc.maxRunes); got != tc.want {

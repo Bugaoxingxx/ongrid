@@ -733,6 +733,18 @@ func firstParagraphOneLine(s string, max int) string {
 		if onlyChars(line, "-=") {
 			continue
 		}
+		// Bold section headers — "**现象**" / "**根因（0 号病人）**" — are
+		// titles, not prose. Skip short ones so root_cause lands on the
+		// paragraph beneath; for a longer fully-bold line keep the content
+		// but drop the wrapping "**". (The "现象**" bug: the TrimLeft below
+		// only stripped the *leading* "**", leaving the trailing pair.)
+		if strings.HasPrefix(line, "**") && strings.HasSuffix(line, "**") && len(line) > 4 {
+			inner := strings.TrimSpace(line[2 : len(line)-2])
+			if inner == "" || len([]rune(inner)) <= 24 {
+				continue // pure section header → skip to the prose below
+			}
+			line = inner // long fully-bold line → keep content, drop markers
+		}
 		// Strip leading list / quote markers so "* bullet" → "bullet".
 		line = strings.TrimLeft(line, "*-> \t")
 		line = strings.TrimSpace(line)

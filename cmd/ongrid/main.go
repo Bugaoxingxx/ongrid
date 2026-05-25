@@ -1021,6 +1021,9 @@ func main() {
 		traceQuerier = pkgtracequery.New(cfg.Traces.URL, log.With(slog.String("comp", "aiops-tracequery")))
 	}
 	toolsReg := aiopstools.NewRegistry(fbClient, edgeUC, deviceUC, promQuerier, logQuerier, traceQuerier, alertUC, log)
+	// query_change_events (HLD-013 Phase 2) — RCA "what changed near T".
+	// *audit.Usecase satisfies aiopstools.AuditLister via ListChanges.
+	toolsReg.SetAuditLister(auditUC)
 	// Populate deployment-level facts for the get_topology tool. Channel
 	// counter pulls from the alert repo's enabled-channel listing so the
 	// number reflects what notify_router actually fans out to.

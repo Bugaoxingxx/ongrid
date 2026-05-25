@@ -126,6 +126,11 @@ func (r *Registry) BuildBaseTools() *ToolBag {
 		out = append(out, NewGetIncidentDetailTool(r.alertUC, r.log))
 		out = append(out, NewQueryAlertRulesTool(r.alertUC, r.log))
 	}
+	// query_change_events — RCA "what changed near T" (HLD-013 Phase 2).
+	// Gated on the audit seam; nil-safe (tool stays out of the bag).
+	if r.auditLister != nil {
+		out = append(out, NewQueryChangeEventsTool(r.auditLister, r.log))
+	}
 	// 12: get_edge_summary — gated on edges (alert/devices/caller are
 	// best-effort, mirroring the closure executor's defensive checks).
 	if r.edges != nil {
