@@ -5,7 +5,7 @@
 // create / edit form is a Modal.
 
 import { useCallback, useEffect, useState } from 'react';
-import { Plus, RefreshCw, Loader2, Pencil, Trash2, Eye, EyeOff, MessagesSquare, MessageSquareShare, Send } from 'lucide-react';
+import { Plus, RefreshCw, Loader2, Pencil, Trash2, Eye, EyeOff, MessagesSquare, MessageSquareShare, Send, Slack } from 'lucide-react';
 import { ApiError } from '@/api/client';
 import {
   createIMApp,
@@ -44,6 +44,13 @@ const PROVIDER_META: Record<IMProvider, { labelZh: string; labelEn: string; icon
     icon: Send,
     hintZh: 'Telegram bot：app_id 填 bot 用户名，app_secret 填 BotFather 的 token。仅 stream 模式（getUpdates 长轮询，出站走代理）。⚠ bot 公开可搜，必须填 allow_from 白名单，否则任何人都能直接和 agent 对话。',
     hintEn: 'Telegram bot: app_id = bot username, app_secret = the BotFather token. Stream-only (getUpdates long-poll, outbound via proxy). ⚠ the bot is publicly searchable — allow_from is REQUIRED, otherwise anyone could talk to the agent.',
+  },
+  slack: {
+    labelZh: 'Slack',
+    labelEn: 'Slack',
+    icon: Slack,
+    hintZh: 'Slack 应用（Socket Mode）：app_id 填 workspace team_id（如 T0123ABC）；需要两个 token — app_token (xapp-) 用于 WebSocket，bot_token (xoxb-) 用于 chat.postMessage。仅 stream 模式（出站 WebSocket，无需公网入口）。⚠ workspace 成员默认都能 @bot 对话，必须填 allow_from 白名单（Slack user id，如 UABC123）。',
+    hintEn: 'Slack app (Socket Mode): app_id = the workspace team_id (e.g. T0123ABC); needs TWO tokens — app_token (xapp-) for the WebSocket and bot_token (xoxb-) for chat.postMessage. Stream-only (outbound WebSocket, no public ingress). ⚠ every workspace member can talk to the bot by default — allow_from (Slack user ids like UABC123) is REQUIRED.',
   },
 };
 
@@ -94,8 +101,8 @@ export default function SettingsIMApps() {
             <span className="font-medium">{tr('通信 — IM 双向 bot', 'Communications — IM bots (two-way)')}</span>
           </div>
           {tr(
-            '配置飞书 / 钉钉 / Telegram 机器人，群里 @bot 或私聊就能开多轮会话。推荐 ',
-            'Configure Feishu / DingTalk / Telegram bots so users can @bot in a group (or DM) and get multi-turn conversations. ',
+            '配置飞书 / 钉钉 / Telegram / Slack 机器人，群里 @bot 或私聊就能开多轮会话。推荐 ',
+            'Configure Feishu / DingTalk / Telegram / Slack bots so users can @bot in a group (or DM) and get multi-turn conversations. ',
           )}
           <b>{tr('stream 模式', 'Stream mode')}</b>
           {tr(
@@ -233,6 +240,12 @@ function IMAppEditor({
   const [name, setName] = useState(target?.name ?? '');
   const [appID, setAppID] = useState(target?.app_id ?? '');
   const [appSecret, setAppSecret] = useState('');
+  // Slack needs two tokens (app_token = xapp-…, bot_token = xoxb-…); the
+  // backend stores them together as JSON in the single app_secret column.
+  // Kept as separate UI state so the operator pastes each into its own
+  // labeled box and we serialize on submit / parse on reveal.
+  const [slackAppToken, setSlackAppToken] = useState('');
+  const [slackBotToken, setSlackBotToken] = useState('');
   const [verifyToken, setVerifyToken] = useState(target?.verify_token ?? '');
   const [encryptKey, setEncryptKey] = useState(target?.encrypt_key ?? '');
   const [allowFrom, setAllowFrom] = useState(target?.allow_from ?? '');
@@ -247,9 +260,36 @@ function IMAppEditor({
       const r = await revealIMAppSecret(target.id);
       setRevealedSecret(r.app_secret);
       setAppSecret(r.app_secret);
+      // Slack: try to split the revealed JSON back into the two fields.
+      // Tolerate a malformed payload (legacy / hand-edited row) — fall
+      // back to the raw value in app_secret + leave the split fields
+      // empty so the operator can re-enter.
+      if (provider === 'slack') {
+        try {
+          const parsed = JSON.parse(r.app_secret) as { app_token?: string; bot_token?: string };
+          setSlackAppToken(parsed.app_token ?? '');
+          setSlackBotToken(parsed.bot_token ?? '');
+        } catch {
+          setSlackAppToken('');
+          setSlackBotToken('');
+        }
+      }
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : (e as Error).message);
     }
+  };
+
+  // serializeSecret builds the wire-side app_secret per provider. Slack
+  // JSON-encodes its two-token pair; everyone else round-trips the single
+  // pasted value. On edit, returning undefined means "keep current".
+  const serializeSecret = (): string | undefined => {
+    if (provider === 'slack') {
+      const app = slackAppToken.trim();
+      const bot = slackBotToken.trim();
+      if (!app && !bot) return undefined;
+      return JSON.stringify({ app_token: app, bot_token: bot });
+    }
+    return appSecret.trim() || undefined;
   };
 
   const save = async () => {
@@ -262,10 +302,10 @@ function IMAppEditor({
         name: name.trim(),
         app_id: appID.trim(),
         // On edit, empty = keep current. On create, required.
-        app_secret: appSecret.trim() || undefined,
+        app_secret: serializeSecret(),
         verify_token: verifyToken.trim() || undefined,
         encrypt_key: encryptKey.trim() || undefined,
-        allow_from: provider === 'telegram' ? allowFrom.trim() || undefined : undefined,
+        allow_from: provider === 'telegram' || provider === 'slack' ? allowFrom.trim() || undefined : undefined,
         enabled,
       };
       if (isCreate) {
@@ -321,7 +361,7 @@ function IMAppEditor({
               onChange={(e) => {
                 const p = e.target.value as IMProvider;
                 setProvider(p);
-                if (p === 'telegram') setMode('stream'); // telegram is stream-only
+                if (p === 'telegram' || p === 'slack') setMode('stream'); // both stream-only
               }}
               disabled={!isCreate}
               className="w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-100 focus:border-zinc-600 focus:outline-none disabled:opacity-50"
@@ -329,6 +369,7 @@ function IMAppEditor({
               <option value="feishu">飞书 / Feishu</option>
               <option value="dingtalk">钉钉 / DingTalk</option>
               <option value="telegram">Telegram</option>
+              <option value="slack">Slack</option>
             </select>
           </Field>
           <Field label={tr('模式', 'Mode')} hint={mode === 'stream'
@@ -340,7 +381,7 @@ function IMAppEditor({
               className="w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-100 focus:border-zinc-600 focus:outline-none"
             >
               <option value="stream">stream (推荐 / recommended)</option>
-              {provider !== 'telegram' && <option value="webhook">webhook</option>}
+              {provider !== 'telegram' && provider !== 'slack' && <option value="webhook">webhook</option>}
             </select>
           </Field>
         </div>
@@ -358,7 +399,7 @@ function IMAppEditor({
           />
         </Field>
 
-        <Field label="app_id" hint={tr('飞书 app_id (cli_xxx) / 钉钉 AppKey / Telegram bot 用户名', 'Feishu app_id (cli_xxx) / DingTalk AppKey / Telegram bot username')}>
+        <Field label="app_id" hint={tr('飞书 app_id (cli_xxx) / 钉钉 AppKey / Telegram bot 用户名 / Slack workspace team_id (T…)', 'Feishu app_id (cli_xxx) / DingTalk AppKey / Telegram bot username / Slack workspace team_id (T…)')}>
           <input
             value={appID}
             onChange={(e) => setAppID(e.target.value)}
@@ -367,42 +408,97 @@ function IMAppEditor({
           />
         </Field>
 
-        <Field label="app_secret" hint={isCreate
-          ? tr('从平台开放后台拷贝（Telegram 填 BotFather 的 token）', 'Copy from the platform admin (Telegram: the BotFather token)')
-          : tr('留空 = 保留现值；填了 = 覆盖', 'Empty = keep existing; filled = overwrite')}>
-          <div className="flex items-center gap-2">
-            <input
-              type={revealedSecret ? 'text' : 'password'}
-              value={appSecret}
-              onChange={(e) => setAppSecret(e.target.value)}
-              placeholder={isCreate ? tr('必填', 'Required') : tr('留空保留现值', 'Leave blank to keep current')}
-              className="flex-1 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100 focus:border-zinc-600 focus:outline-none"
-            />
-            {!isCreate && (
-              <button
-                type="button"
-                onClick={revealedSecret ? () => { setRevealedSecret(null); setAppSecret(''); } : reveal}
-                className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-zinc-300 hover:bg-zinc-800"
-                title={revealedSecret ? tr('清空', 'Clear') : tr('查看', 'Reveal')}
-              >
-                {revealedSecret ? <EyeOff size={12} /> : <Eye size={12} />}
-              </button>
-            )}
-          </div>
-        </Field>
+        {provider === 'slack' ? (
+          <>
+            <Field
+              label="app_token"
+              hint={tr(
+                'Slack App-Level Token（xapp-…）— 用于建立 Socket Mode WebSocket。Slack admin → Your app → Basic Information → App-Level Tokens 创建。',
+                'Slack app-level token (xapp-…) — used to open the Socket Mode WebSocket. Create at Your app → Basic Information → App-Level Tokens.',
+              )}
+            >
+              <input
+                type={revealedSecret ? 'text' : 'password'}
+                value={slackAppToken}
+                onChange={(e) => setSlackAppToken(e.target.value)}
+                placeholder={isCreate ? 'xapp-1-…' : tr('留空保留现值', 'Leave blank to keep current')}
+                className="w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100 focus:border-zinc-600 focus:outline-none"
+              />
+            </Field>
+            <Field
+              label="bot_token"
+              hint={tr(
+                'Slack Bot User OAuth Token（xoxb-…）— 用于 chat.postMessage 发消息。Slack admin → Your app → OAuth & Permissions。',
+                'Slack bot user OAuth token (xoxb-…) — used for chat.postMessage. Find at Your app → OAuth & Permissions.',
+              )}
+            >
+              <div className="flex items-center gap-2">
+                <input
+                  type={revealedSecret ? 'text' : 'password'}
+                  value={slackBotToken}
+                  onChange={(e) => setSlackBotToken(e.target.value)}
+                  placeholder={isCreate ? 'xoxb-…' : tr('留空保留现值', 'Leave blank to keep current')}
+                  className="flex-1 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100 focus:border-zinc-600 focus:outline-none"
+                />
+                {!isCreate && (
+                  <button
+                    type="button"
+                    onClick={revealedSecret
+                      ? () => { setRevealedSecret(null); setSlackAppToken(''); setSlackBotToken(''); }
+                      : reveal}
+                    className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-zinc-300 hover:bg-zinc-800"
+                    title={revealedSecret ? tr('清空', 'Clear') : tr('查看', 'Reveal')}
+                  >
+                    {revealedSecret ? <EyeOff size={12} /> : <Eye size={12} />}
+                  </button>
+                )}
+              </div>
+            </Field>
+          </>
+        ) : (
+          <Field label="app_secret" hint={isCreate
+            ? tr('从平台开放后台拷贝（Telegram 填 BotFather 的 token）', 'Copy from the platform admin (Telegram: the BotFather token)')
+            : tr('留空 = 保留现值；填了 = 覆盖', 'Empty = keep existing; filled = overwrite')}>
+            <div className="flex items-center gap-2">
+              <input
+                type={revealedSecret ? 'text' : 'password'}
+                value={appSecret}
+                onChange={(e) => setAppSecret(e.target.value)}
+                placeholder={isCreate ? tr('必填', 'Required') : tr('留空保留现值', 'Leave blank to keep current')}
+                className="flex-1 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100 focus:border-zinc-600 focus:outline-none"
+              />
+              {!isCreate && (
+                <button
+                  type="button"
+                  onClick={revealedSecret ? () => { setRevealedSecret(null); setAppSecret(''); } : reveal}
+                  className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-zinc-300 hover:bg-zinc-800"
+                  title={revealedSecret ? tr('清空', 'Clear') : tr('查看', 'Reveal')}
+                >
+                  {revealedSecret ? <EyeOff size={12} /> : <Eye size={12} />}
+                </button>
+              )}
+            </div>
+          </Field>
+        )}
 
-        {provider === 'telegram' && (
+        {(provider === 'telegram' || provider === 'slack') && (
           <Field
             label={tr('allow_from（发送者白名单）', 'allow_from (sender allowlist)')}
-            hint={tr(
-              '必填。逗号分隔的 Telegram 数字 user id，只有名单内的人能和 bot 对话，其他人一律静默忽略。给自己发消息给 @userinfobot 可查到自己的 id。',
-              'Required. Comma-separated numeric Telegram user IDs — only these may talk to the bot; everyone else is silently ignored. DM @userinfobot to find your own id.',
-            )}
+            hint={provider === 'telegram'
+              ? tr(
+                  '必填。逗号分隔的 Telegram 数字 user id，只有名单内的人能和 bot 对话，其他人一律静默忽略。给自己发消息给 @userinfobot 可查到自己的 id。',
+                  'Required. Comma-separated numeric Telegram user IDs — only these may talk to the bot; everyone else is silently ignored. DM @userinfobot to find your own id.',
+                )
+              : tr(
+                  '必填。逗号分隔的 Slack user id（U… 开头，profile 页 URL 里能看到）。仅名单内成员能 @bot 或私聊触发 agent，其他人一律静默忽略，避免 workspace 成员误触。',
+                  'Required. Comma-separated Slack user IDs (start with U…, visible in the profile URL). Only allowlisted members may talk to the bot; everyone else is silently ignored so a wide-open workspace can\'t accidentally trigger the agent.',
+                )
+            }
           >
             <input
               value={allowFrom}
               onChange={(e) => setAllowFrom(e.target.value)}
-              placeholder="8211893274, 123456789"
+              placeholder={provider === 'telegram' ? '8211893274, 123456789' : 'U0ABCD1234, U0EFGH5678'}
               className="w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100 focus:border-zinc-600 focus:outline-none"
             />
           </Field>

@@ -83,9 +83,9 @@ func isNumericID(s string) bool {
 func (in *AppInput) validate() error {
 	provider := strings.ToLower(strings.TrimSpace(in.Provider))
 	switch provider {
-	case model.ProviderFeishu, model.ProviderDingTalk, model.ProviderTelegram:
+	case model.ProviderFeishu, model.ProviderDingTalk, model.ProviderTelegram, model.ProviderSlack:
 	default:
-		return fmt.Errorf("%w: provider must be feishu, dingtalk, or telegram", errs.ErrInvalid)
+		return fmt.Errorf("%w: provider must be feishu, dingtalk, telegram, or slack", errs.ErrInvalid)
 	}
 	mode := strings.ToLower(strings.TrimSpace(in.Mode))
 	if mode == "" {
@@ -118,6 +118,24 @@ func (in *AppInput) validate() error {
 		ids := ParseAllowFrom(in.AllowFrom)
 		if len(ids) == 0 {
 			return fmt.Errorf("%w: telegram requires allow_from — at least one numeric Telegram user ID (the bot is publicly reachable; an empty allowlist would let anyone command the agent)", errs.ErrInvalid)
+		}
+		in.AllowFrom = strings.Join(ids, ",") // canonicalize stored form
+	}
+	// Slack: Socket Mode is the only mode the manager supports (webhook
+	// Events-API would require a public ingress; the whole point of
+	// Socket Mode is to avoid that — same shape as Telegram getUpdates).
+	// Allowlist semantics mirror Telegram: a Slack workspace bot accepts
+	// messages from any workspace member by default, which on a public
+	// or guest-rich workspace would let surprise users command the
+	// agent. Require at least one Slack user_id (U…) in allow_from so
+	// the operator must consciously open the door.
+	if provider == model.ProviderSlack {
+		if mode != model.ModeStream {
+			return fmt.Errorf("%w: slack only supports stream mode (Socket Mode)", errs.ErrInvalid)
+		}
+		ids := ParseAllowFrom(in.AllowFrom)
+		if len(ids) == 0 {
+			return fmt.Errorf("%w: slack requires allow_from — at least one Slack user ID (e.g. UABC123). Without it any workspace member could command a tool-equipped agent", errs.ErrInvalid)
 		}
 		in.AllowFrom = strings.Join(ids, ",") // canonicalize stored form
 	}

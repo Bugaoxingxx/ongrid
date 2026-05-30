@@ -94,6 +94,7 @@ import (
 	managerserverknowledge "github.com/ongridio/ongrid/internal/manager/server/knowledge"
 	managerbizimbridge "github.com/ongridio/ongrid/internal/manager/biz/imbridge"
 	managerbizimbridgefeishu "github.com/ongridio/ongrid/internal/manager/biz/imbridge/provider/feishu"
+	managerbizimbridgeslack "github.com/ongridio/ongrid/internal/manager/biz/imbridge/provider/slack"
 	managerbizimbridgetelegram "github.com/ongridio/ongrid/internal/manager/biz/imbridge/provider/telegram"
 	managerimbridgedata "github.com/ongridio/ongrid/internal/manager/data/imbridge/store"
 	managerserverimbridge "github.com/ongridio/ongrid/internal/manager/server/imbridge"
@@ -1322,6 +1323,11 @@ func main() {
 	// friendly behind GFW). Sender allowlist enforced in the provider
 	// (ADR-031).
 	imbridgeStreamSupervisor.RegisterFactory("telegram", managerbizimbridgetelegram.NewStreamFactory(log))
+	// Slack is stream-only via Socket Mode (outbound WebSocket → same
+	// proxy-friendly philosophy as Telegram getUpdates). Allowlist
+	// enforced in the provider so a misconfigured open workspace can't
+	// turn the agent into an LLM toy for random members.
+	imbridgeStreamSupervisor.RegisterFactory("slack", managerbizimbridgeslack.NewStreamFactory(log))
 	go imbridgeStreamSupervisor.Run(rootCtx)
 
 	// @-mention search backend (HLD: ChatInput @-popover). Wires

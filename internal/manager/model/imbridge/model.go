@@ -19,6 +19,18 @@ const (
 	// (outbound, proxy-friendly), there is no webhook path. app_id = bot
 	// username/id, app_secret = the BotFather token. See ADR-031.
 	ProviderTelegram = "telegram"
+	// ProviderSlack is stream-only via Socket Mode: the manager opens an
+	// outbound WebSocket to wss-primary.slack.com after fetching a
+	// connection URL via apps.connections.open. No public ingress is
+	// required (mirrors Telegram getUpdates philosophy → proxy-friendly).
+	// Slack needs TWO tokens — an app-level token (xapp-...) for the
+	// WebSocket and a bot user token (xoxb-...) for chat.postMessage /
+	// chat.update. They're stored together in app_secret as JSON:
+	//   {"app_token":"xapp-...","bot_token":"xoxb-..."}
+	// app_id is the Slack workspace team id (e.g. "T0123ABCD") or any
+	// stable label the operator picks; only used as the uniqueness key
+	// alongside provider.
+	ProviderSlack = "slack"
 )
 
 // Mode selects how inbound events reach the manager. Stream mode is
