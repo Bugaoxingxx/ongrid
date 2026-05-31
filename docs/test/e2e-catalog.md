@@ -36,7 +36,7 @@
 | # | 用例 | 触发 | 关键断言点 | 优 | 实现 |
 |---|---|---|---|---|---|
 | B1 | 登录 → JWT → 受保护接口 | `POST /v1/auth/login` | 返回 access+refresh, Bearer 调 `/v1/self` 200 | **P0** | ✅ `tests/e2e/auth_login_test.go` |
-| B2 | JWT 过期 + refresh | access 过期后 `POST /v1/auth/refresh` | 新 access 可用 | P1 | |
+| B2 | JWT 过期 + refresh | access 过期后 `POST /v1/auth/refresh` | 新 access 可用 | P1 | ✅ `tests/e2e/auth_refresh_test.go` |
 | B3 | 三角色 RBAC | admin/user/viewer 各登 | admin 通 / user 白名单 / viewer 403 | **P0** | |
 | B4 | 用户 CRUD + 改密 + 改角色 | `/v1/users` 系列 | DB 行对得上、casbin 权限同步 | P1 | |
 | B5 | 组织 + 成员 CRUD | `/v1/orgs` 系列 | 增删成员 | P2 | |
@@ -184,7 +184,7 @@
 
 | # | 用例 | 触发 | 关键断言点 | 优 | 实现 |
 |---|---|---|---|---|---|
-| O1 | system-settings CRUD + reveal sensitive | `PUT /system-settings/llm/anthropic_api_key` | sensitive reveal 需权限 | **P0** | |
+| O1 | system-settings CRUD + reveal sensitive | `PUT /system-settings/llm/anthropic_api_key` | sensitive reveal 需权限 | **P0** | ✅ `tests/e2e/settings_reveal_test.go` |
 | O2 | LLM 模型列表 / 默认实时刷 | 改 default_provider | `/aiops/models` default 字段变 | P1 | |
 | O3 | Grafana/Prom/Loki/Tempo integration test 按钮 | `/integrations/{x}/test` | 真探一次,返 ok+latency | P2 | |
 | O4 | invalidate LLM router | `POST /integrations/llm/invalidate` | 下一次 chat 走新配置 | P2 | |
