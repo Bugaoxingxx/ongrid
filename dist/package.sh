@@ -466,7 +466,28 @@ mkdir -p "${OUT_DIR}"
 log "creating ${TARBALL}"
 STAGE_PARENT="$(dirname "${STAGE_DIR}")"
 STAGE_BASE="$(basename "${STAGE_DIR}")"
-tar -cf - -C "${STAGE_PARENT}" "${STAGE_BASE}" | xz -9e -T0 -c > "${TARBALL}"
+
+# Scrub macOS xattrs + AppleDouble metadata before tarring. macOS bsdtar will
+# otherwise leak LIBARCHIVE.xattr.com.apple.provenance, com.apple.quarantine
+# etc into the archive, which makes GNU tar on the target machine spew
+# warnings on every extracted file. Belt-and-braces: scrub on the filesystem
+# AND tell tar not to capture xattrs (via --no-xattrs on GNU tar / new bsdtar,
+# and COPYFILE_DISABLE=1 for older bsdtar that doesn't know the flag).
+if [[ "${OSTYPE:-}" == "darwin"* ]]; then
+    log "stripping macOS xattrs from stage (darwin host)"
+    xattr -rc "${STAGE_DIR}" 2>/dev/null || true
+    find "${STAGE_DIR}" -name '.DS_Store' -delete 2>/dev/null || true
+fi
+
+TAR_STDERR="$(mktemp -t ongrid-tar-stderr.XXXXXX)"
+COPYFILE_DISABLE=1 tar --no-xattrs -cf - -C "${STAGE_PARENT}" "${STAGE_BASE}" 2>"${TAR_STDERR}" \
+    | xz -9e -T0 -c > "${TARBALL}"
+# Suppress just the "unknown flag" chatter from older bsdtar (--no-xattrs is
+# not universal); surface anything else so real tar errors aren't masked.
+if [ -s "${TAR_STDERR}" ]; then
+    grep -vE 'unknown extended|--no-xattrs|unrecognized option' "${TAR_STDERR}" >&2 || true
+fi
+rm -f "${TAR_STDERR}"
 
 # --- sha256 sidecar ---------------------------------------------------------
 log "computing sha256"

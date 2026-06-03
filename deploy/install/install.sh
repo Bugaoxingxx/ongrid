@@ -167,8 +167,120 @@ fi
 
 # ---------- preflight ----------
 log_info "preflight checks"
-command -v docker >/dev/null 2>&1 || { log_error "docker CLI not found; install docker >= 24"; exit 1; }
+
+# Detect distro family from /etc/os-release. ID + ID_LIKE between them cover
+# Ubuntu/Debian, RHEL/Rocky/Alma/CentOS/Fedora, Arch, openSUSE, Alpine, etc.
+# Falls back to "unknown" if /etc/os-release is missing.
+detect_distro_family() {
+    local id="" id_like=""
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        id=$(. /etc/os-release && printf '%s' "${ID:-}")
+        id_like=$(. /etc/os-release && printf '%s' "${ID_LIKE:-}")
+    fi
+    local probe="${id} ${id_like}"
+    case " ${probe} " in
+        *" debian "*|*" ubuntu "*)             echo "debian"; return ;;
+        *" rhel "*|*" fedora "*|*" centos "*|*" rocky "*|*" almalinux "*) echo "rhel"; return ;;
+    esac
+    echo "unknown"
+}
+
+# Try Docker's official convenience script first — it ships docker-ce AND the
+# compose v2 plugin in one shot. CN networks frequently can't reach
+# get.docker.com, so we fall back to the distro packages when that fails.
+auto_install_docker() {
+    local family
+    family=$(detect_distro_family)
+    log_info "attempting docker auto-install (distro family: ${family})"
+
+    # --- attempt 1: Docker's convenience script (universal) ---
+    if curl -sSf --max-time 5 -o /dev/null https://get.docker.com 2>/dev/null; then
+        log_info "fetching https://get.docker.com | sh"
+        if curl -fsSL https://get.docker.com | sh; then
+            return 0
+        fi
+        log_warn "get.docker.com installer failed; trying distro packages"
+    else
+        log_warn "get.docker.com unreachable (CN network?); falling back to distro packages"
+    fi
+
+    # --- attempt 2: distro package manager ---
+    case "$family" in
+        debian)
+            # docker.io + docker-compose-v2 are in Ubuntu 22.04+ universe and
+            # Debian 12 main. Older Ubuntu (20.04) won't have the v2 plugin
+            # via apt; the post-check below will catch that.
+            DEBIAN_FRONTEND=noninteractive apt-get update -y || true
+            DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-v2 || \
+                DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-plugin || true
+            ;;
+        rhel)
+            dnf install -y docker docker-compose-plugin || \
+                yum install -y docker docker-compose-plugin || true
+            ;;
+        *)
+            log_error "unsupported distro family for auto-install: ${family}"
+            log_error "install docker manually, then re-run: https://docs.docker.com/engine/install/"
+            return 1
+            ;;
+    esac
+
+    # Enable + start docker. Best-effort: a fresh container/VM without
+    # systemd (e.g. WSL1) will fail here and the user will see the next
+    # check trip.
+    systemctl enable --now docker 2>/dev/null || true
+    return 0
+}
+
+if ! command -v docker >/dev/null 2>&1; then
+    log_warn "docker CLI not found; attempting auto-install"
+    auto_install_docker || true
+    if ! command -v docker >/dev/null 2>&1; then
+        log_error "docker auto-install failed; install docker >= 24 manually and re-run"
+        log_error "manual install guide: https://docs.docker.com/engine/install/"
+        exit 1
+    fi
+    log_info "docker installed: $(docker --version 2>/dev/null || true)"
+fi
+
 docker info >/dev/null 2>&1 || { log_error "docker daemon not reachable (permission or not running)"; exit 1; }
+
+# ---------- CN mirror auto-config ----------
+# Probe Docker Hub once. If unreachable (the typical CN-network case), drop
+# a /etc/docker/daemon.json with a battery of well-known CN mirrors. We only
+# touch the file if it does not already specify registry-mirrors — operators
+# who configured their own mirrors get to keep them.
+log_info "checking Docker Hub reachability"
+if ! curl -sS --max-time 5 -o /dev/null https://registry-1.docker.io/v2/ 2>/dev/null; then
+    if [[ -f /etc/docker/daemon.json ]] && grep -q '"registry-mirrors"' /etc/docker/daemon.json; then
+        log_info "Docker Hub unreachable but /etc/docker/daemon.json already has registry-mirrors; leaving alone"
+    else
+        log_warn "Docker Hub unreachable — configuring CN registry mirrors in /etc/docker/daemon.json"
+        mkdir -p /etc/docker
+        if [[ -f /etc/docker/daemon.json ]]; then
+            cp /etc/docker/daemon.json "/etc/docker/daemon.json.bak.$(date +%s)"
+        fi
+        cat > /etc/docker/daemon.json <<'EOF'
+{
+  "registry-mirrors": [
+    "https://docker.1ms.run",
+    "https://docker.mirrors.ustc.edu.cn",
+    "https://hub.rat.dev",
+    "https://docker.m.daocloud.io"
+  ]
+}
+EOF
+        systemctl restart docker 2>/dev/null || true
+        # Wait up to 5s for the daemon to come back; otherwise the next
+        # `docker compose` call races and fails.
+        for _ in 1 2 3 4 5; do
+            docker info >/dev/null 2>&1 && break
+            sleep 1
+        done
+    fi
+fi
+
 docker compose version >/dev/null 2>&1 || { log_error "docker compose v2 not found (need the 'docker compose' subcommand)"; exit 1; }
 
 # ---------- install dir ----------
@@ -474,14 +586,39 @@ fi
 #   2. Exported env var ONGRID_PUBLIC_URL                        → use (non-interactive automation)
 #   3. Interactive terminal: 30s countdown prompt (default=detected)
 #   4. No terminal & nothing supplied: detected host + loud warning
+# Cloud-metadata-first public-IP detector. The legacy `ip route get` /
+# `hostname -I` heuristics pick the host's INTERNAL NIC on Tencent/Aliyun
+# (10.0.4.17 et al), which remote edges cannot route to. We try each big
+# cloud's metadata service in turn (they NAT the public/EIP onto the host),
+# then a couple of public probes, then fall back to the internal-IP guess.
+detect_public_ip() {
+    local ip=""
+    # Tencent Cloud
+    ip=$(curl -sS --max-time 2 http://metadata.tencentyun.com/latest/meta-data/public-ipv4 2>/dev/null || true)
+    if [[ -n "$ip" && "$ip" != "null" ]]; then echo "$ip"; return; fi
+    # Aliyun (EIP)
+    ip=$(curl -sS --max-time 2 http://100.100.100.200/latest/meta-data/eipv4 2>/dev/null || true)
+    if [[ -n "$ip" ]]; then echo "$ip"; return; fi
+    # AWS / GCP / Azure (IMDSv1; AWS v2 needs a token but most VMs still allow v1)
+    ip=$(curl -sS --max-time 2 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)
+    if [[ -n "$ip" ]]; then echo "$ip"; return; fi
+    # Public probe (last network-resort)
+    ip=$(curl -sS --max-time 3 https://api.ipify.org 2>/dev/null || true)
+    if [[ -n "$ip" ]]; then echo "$ip"; return; fi
+    ip=$(curl -sS --max-time 3 https://ifconfig.me 2>/dev/null || true)
+    if [[ -n "$ip" ]]; then echo "$ip"; return; fi
+    # Internal-IP fallback (preserves old behaviour)
+    ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' || true)
+    echo "$ip"
+}
+
 if is_blank ONGRID_PUBLIC_URL; then
-    # ---- best-guess default host (same heuristics as before) ----
-    HOST_FOR_URL=""
-    if h=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^127\.' | grep -v '^$' | head -1); then
-        HOST_FOR_URL="$h"
-    fi
+    # ---- best-guess default host: cloud metadata → public probe → internal NIC ----
+    HOST_FOR_URL="$(detect_public_ip | tr -d '[:space:]')"
     if [[ -z "$HOST_FOR_URL" ]]; then
-        HOST_FOR_URL=$(ip route get 8.8.8.8 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || true)
+        if h=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^127\.' | grep -v '^$' | head -1); then
+            HOST_FOR_URL="$h"
+        fi
     fi
     if [[ -z "$HOST_FOR_URL" ]]; then
         fqdn=$(hostname -f 2>/dev/null || true)
