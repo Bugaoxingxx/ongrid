@@ -866,6 +866,22 @@ export default function FlowEditorPage() {
                 {testErr && (
                   <div className="mt-1 break-all rounded-md border border-red-900/50 bg-red-950/30 px-2 py-1 text-[11px] text-red-400">{testErr}</div>
                 )}
+                {!testErr && testOut[selected.id] !== undefined && (
+                  <div className="mt-1 rounded-md border border-violet-900/40 bg-violet-950/20 p-2">
+                    <div className="mb-1 text-[11px] font-medium text-violet-300">{tr('试跑输出', 'Test output')}</div>
+                    {isEmptyOutput(testOut[selected.id]) ? (
+                      <div className="text-[11px] leading-relaxed text-amber-400/90">
+                        {tr(
+                          '节点执行成功，但没有返回数据。常见原因：参数为空，或参数引用了上游/触发器数据——单节点试跑是隔离运行的，{{nodes.*}} / {{trigger.*}} 在这里没有值。请先填好该节点自己的参数（如 device_ids），再试跑。',
+                          'The node ran but returned no data. Usually that means a required arg is empty, or an arg references upstream/trigger data — single-node test-run is isolated, so {{nodes.*}} / {{trigger.*}} have no value here. Fill in this node\'s own args (e.g. device_ids) and test again.'
+                        )}
+                      </div>
+                    ) : null}
+                    <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-all rounded bg-zinc-950 p-1.5 text-[10px] leading-relaxed text-zinc-300">
+                      {JSON.stringify(testOut[selected.id], null, 2)}
+                    </pre>
+                  </div>
+                )}
               </div>
             )}
             <SelfOutputRefs
@@ -1336,6 +1352,29 @@ function flattenEntries(v: unknown, prefix = '', out: OutputEntry[] = [], depth 
     out.push({ path: prefix, value: v });
   }
   return out;
+}
+
+// isEmptyOutput reports whether a test output carries no useful data — an
+// empty object, or a single `result` wrapper that is null / "" / {} / has an
+// empty results array. Used to nudge the user toward filling in the node's
+// own args (single-node test-run is isolated; upstream refs are blank).
+function isEmptyOutput(v: unknown): boolean {
+  if (v === null || v === undefined) return true;
+  if (typeof v !== 'object') return false;
+  const keys = Object.keys(v as Record<string, unknown>);
+  if (keys.length === 0) return true;
+  if (keys.length === 1 && keys[0] === 'result') {
+    const r = (v as Record<string, unknown>).result;
+    if (r === null || r === undefined) return true;
+    if (typeof r === 'string') return r.trim() === '';
+    if (typeof r === 'object') {
+      const rk = Object.keys(r as Record<string, unknown>);
+      if (rk.length === 0) return true;
+      const results = (r as Record<string, unknown>).results;
+      if (Array.isArray(results) && results.length === 0) return true;
+    }
+  }
+  return false;
 }
 
 // previewValue renders a leaf value as a short single-line string for the
