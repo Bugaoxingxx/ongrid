@@ -1556,6 +1556,7 @@ func main() {
 	flowExec := managerbizflow.Executors{
 		Tools:  flowToolInvoker{reg: toolsReg},
 		Notify: flowNotifierShim{channels: alertRepo, router: notifyRouter},
+		LLM:    flowLLMRunner{client: llmClient},
 	}
 	if flowRT, ok := aiopsRuntime.(*aiopschatruntime.Runtime); ok && flowRT != nil {
 		flowExec.Agent = flowAgentRunner{rt: flowRT}
@@ -3078,6 +3079,28 @@ func (s flowAgentRunner) RunAgent(ctx context.Context, persona, prompt string) (
 		return "", fmt.Errorf("agent worker %s: %s", w.ID, reason)
 	}
 	return w.Result, nil
+}
+
+// flowLLMRunner implements bizflow.LLMRunner over the routing llm.Client
+// — one chat completion, no tools, no agent loop. Provider/Model left
+// empty so the call follows the configured default (DefaultResolver),
+// same as the report extractor / RCA summarizer.
+type flowLLMRunner struct{ client llm.Client }
+
+func (s flowLLMRunner) RunLLM(ctx context.Context, system, user string) (string, error) {
+	if s.client == nil {
+		return "", fmt.Errorf("llm client not configured")
+	}
+	msgs := make([]llm.Message, 0, 2)
+	if strings.TrimSpace(system) != "" {
+		msgs = append(msgs, llm.Message{Role: "system", Content: system})
+	}
+	msgs = append(msgs, llm.Message{Role: "user", Content: user})
+	resp, err := s.client.Chat(ctx, llm.ChatReq{Messages: msgs})
+	if err != nil {
+		return "", err
+	}
+	return resp.Assistant.Content, nil
 }
 
 // flowNotifierShim implements bizflow.Notifier over the alert channel

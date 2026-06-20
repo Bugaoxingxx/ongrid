@@ -11,6 +11,7 @@ export type FlowNodeType =
   | 'trigger.alert_fired'
   | 'trigger.cron'
   | 'agent'
+  | 'llm'
   | 'tool'
   | 'condition'
   | 'notify'

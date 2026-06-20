@@ -28,6 +28,7 @@ const (
 	NodeTriggerAlert  = "trigger.alert_fired"
 	NodeTriggerCron   = "trigger.cron"
 	NodeAgent         = "agent"
+	NodeLLM           = "llm"
 	NodeTool          = "tool"
 	NodeCondition     = "condition"
 	NodeNotify        = "notify"
@@ -77,6 +78,7 @@ var knownTypes = map[string]bool{
 	NodeTriggerAlert:  true,
 	NodeTriggerCron:   true,
 	NodeAgent:         true,
+	NodeLLM:           true,
 	NodeTool:          true,
 	NodeCondition:     true,
 	NodeNotify:        true,

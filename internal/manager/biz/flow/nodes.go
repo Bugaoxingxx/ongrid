@@ -34,6 +34,16 @@ type Notifier interface {
 	Notify(ctx context.Context, channelIDs []uint64, title, message string) error
 }
 
+// LLMRunner does ONE chat completion (system + user → text), no tools,
+// no persona, no multi-turn. The `llm` node uses it for cheap pure-text
+// transforms (summarize / rewrite / classify / extract) where a full
+// ReAct agent node is overkill. Implemented in main.go over the routing
+// llm.Client (provider/model omitted → DefaultResolver picks the
+// configured default). nil → the llm node degrades with a clear error.
+type LLMRunner interface {
+	RunLLM(ctx context.Context, system, user string) (string, error)
+}
+
 // NodeResult is what an executor returns: the data output that lands
 // in the run context plus the control port that fired.
 type NodeResult struct {
@@ -44,15 +54,18 @@ type NodeResult struct {
 // Executors bundles the seams. Zero value works for engine tests.
 type Executors struct {
 	Agent  AgentRunner
+	LLM    LLMRunner
 	Tools  ToolInvoker
 	Notify Notifier
 }
 
 // defaultNodeTimeout bounds every non-agent node. Agent nodes get the
-// longer budget — a ReAct worker legitimately runs minutes.
+// longer budget — a ReAct worker legitimately runs minutes. The llm
+// node sits between: a single completion, no tool loop.
 const (
 	defaultNodeTimeout = 2 * time.Minute
 	agentNodeTimeout   = 15 * time.Minute
+	llmNodeTimeout     = 3 * time.Minute
 )
 
 // execute runs one node. cfg is the node's config AFTER expression
@@ -100,6 +113,39 @@ func (x Executors) execute(ctx context.Context, node GraphNode, cfg map[string]a
 			structured, perr := parseLooseJSON(answer)
 			if perr != nil {
 				return NodeResult{}, fmt.Errorf("agent node: output_schema declared but answer is not JSON: %w", perr)
+			}
+			out["structured"] = structured
+		}
+		return NodeResult{Output: out, Port: PortNext}, nil
+
+	case NodeLLM:
+		if x.LLM == nil {
+			return NodeResult{}, fmt.Errorf("llm node: runner not wired")
+		}
+		prompt, _ := cfg["prompt"].(string)
+		if strings.TrimSpace(prompt) == "" {
+			return NodeResult{}, fmt.Errorf("llm node: prompt is empty")
+		}
+		system, _ := cfg["system"].(string)
+		// Same structured gateway as the agent node: an output_schema
+		// turns the free-text answer into output.structured so condition
+		// / tool nodes can reference fields.
+		schema, hasSchema := cfg["output_schema"].(map[string]any)
+		if hasSchema {
+			sb, _ := json.Marshal(schema)
+			prompt = prompt + "\n\nReturn ONLY a single JSON object matching this JSON Schema (no prose, no code fence):\n" + string(sb)
+		}
+		lctx, cancel := context.WithTimeout(ctx, llmNodeTimeout)
+		defer cancel()
+		answer, err := x.LLM.RunLLM(lctx, system, prompt)
+		if err != nil {
+			return NodeResult{}, fmt.Errorf("llm node: %w", err)
+		}
+		out := map[string]any{"answer": answer}
+		if hasSchema {
+			structured, perr := parseLooseJSON(answer)
+			if perr != nil {
+				return NodeResult{}, fmt.Errorf("llm node: output_schema declared but answer is not JSON: %w", perr)
 			}
 			out["structured"] = structured
 		}

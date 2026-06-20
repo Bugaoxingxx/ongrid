@@ -30,6 +30,7 @@ import {
   GitBranch,
   History,
   Siren,
+  Sparkles,
   Play,
   Save,
   Trash2,
@@ -61,7 +62,8 @@ const NODE_META: Record<FlowNodeType, { icon: typeof Bot; color: string; zh: str
   'trigger.manual': { icon: CircleDot, color: 'text-emerald-400', zh: '手动触发', en: 'Manual trigger' },
   'trigger.alert_fired': { icon: Siren, color: 'text-rose-400', zh: '告警触发', en: 'On alert' },
   'trigger.cron': { icon: Clock, color: 'text-amber-400', zh: '定时触发', en: 'On schedule' },
-  agent: { icon: Bot, color: 'text-indigo-400', zh: 'Agent', en: 'Agent' },
+  agent: { icon: Bot, color: 'text-indigo-400', zh: 'Agent（自主）', en: 'Agent' },
+  llm: { icon: Sparkles, color: 'text-violet-400', zh: 'LLM（单次）', en: 'LLM' },
   tool: { icon: Wrench, color: 'text-sky-400', zh: '工具', en: 'Tool' },
   condition: { icon: GitBranch, color: 'text-amber-400', zh: '条件', en: 'Condition' },
   notify: { icon: Bell, color: 'text-rose-400', zh: '通知', en: 'Notify' },
@@ -71,7 +73,7 @@ const NODE_META: Record<FlowNodeType, { icon: typeof Bot; color: string; zh: str
 // Core nodes the user hand-places. `tool` is excluded here — tool nodes
 // come from the searchable catalog (every registered BaseTool), added via
 // addNode('tool', {config:{tool}}).
-const BASE_NODE_TYPES: FlowNodeType[] = ['trigger.manual', 'trigger.alert_fired', 'trigger.cron', 'agent', 'condition', 'notify', 'set'];
+const BASE_NODE_TYPES: FlowNodeType[] = ['trigger.manual', 'trigger.alert_fired', 'trigger.cron', 'agent', 'llm', 'condition', 'notify', 'set'];
 
 const CATEGORY_ORDER = ['observability', 'host', 'topology', 'incident', 'sre', 'knowledge', 'control', 'other'];
 const CATEGORY_LABEL: Record<string, { zh: string; en: string }> = {
@@ -112,25 +114,43 @@ function FlowCanvasNode({ data, selected }: NodeProps<CanvasNode>) {
   const Icon = meta?.icon ?? Wrench;
   const isCondition = data.flowType === 'condition';
   const isTrigger = data.flowType.startsWith('trigger.');
+  const ring = `${statusRing(data.runStatus)} ${selected ? 'ring-1 ring-indigo-500' : ''}`;
+  const handleBase = '!h-1.5 !w-1.5 !min-w-0 !border-0';
+
+  // Condition node: a labelled two-way switch. Header row + two output
+  // rows (真 / 假) each with its own color-matched source handle, so the
+  // branch a downstream edge leaves from is unambiguous.
+  if (isCondition) {
+    return (
+      <div className={`min-w-[120px] max-w-[220px] rounded-md border bg-zinc-900 text-left ${ring}`}>
+        <Handle type="target" position={Position.Left} className={`${handleBase} !bg-zinc-500`} style={{ top: 16 }} />
+        <div className="flex items-center gap-1.5 px-2 py-1">
+          <Icon size={12} className="shrink-0 text-amber-400" />
+          <span className="truncate text-[11px] font-medium text-zinc-200">{data.label}</span>
+        </div>
+        <div className="border-t border-zinc-800">
+          <div className="relative flex items-center justify-end px-2 py-0.5 text-[9px] font-medium text-emerald-400">
+            真 · true
+            <Handle id="true" type="source" position={Position.Right} className={`${handleBase} !bg-emerald-500`} />
+          </div>
+          <div className="relative flex items-center justify-end border-t border-zinc-800/60 px-2 py-0.5 text-[9px] font-medium text-zinc-500">
+            假 · false
+            <Handle id="false" type="source" position={Position.Right} className={`${handleBase} !bg-zinc-500`} />
+          </div>
+        </div>
+        <Handle id="error" type="source" position={Position.Bottom} className={`${handleBase} !bg-red-500/80`} />
+      </div>
+    );
+  }
+
   return (
-    <div
-      className={`flex min-w-[96px] max-w-[200px] items-center gap-1.5 rounded-md border bg-zinc-900 px-2 py-1 text-left transition-shadow ${statusRing(
-        data.runStatus
-      )} ${selected ? 'ring-1 ring-indigo-500' : ''}`}
-    >
-      {!isTrigger && <Handle type="target" position={Position.Left} className="!h-1.5 !w-1.5 !min-w-0 !border-0 !bg-zinc-500" />}
+    <div className={`flex min-w-[96px] max-w-[200px] items-center gap-1.5 rounded-md border bg-zinc-900 px-2 py-1 text-left transition-shadow ${ring}`}>
+      {!isTrigger && <Handle type="target" position={Position.Left} className={`${handleBase} !bg-zinc-500`} />}
       <Icon size={12} className={`shrink-0 ${meta?.color ?? 'text-zinc-400'}`} />
       <span className="truncate text-[11px] font-medium text-zinc-200">{data.label}</span>
-      {isCondition ? (
-        <>
-          <Handle id="true" type="source" position={Position.Right} style={{ top: '32%' }} className="!h-1.5 !w-1.5 !min-w-0 !border-0 !bg-emerald-500" />
-          <Handle id="false" type="source" position={Position.Right} style={{ top: '68%' }} className="!h-1.5 !w-1.5 !min-w-0 !border-0 !bg-zinc-500" />
-        </>
-      ) : (
-        <Handle id="next" type="source" position={Position.Right} className="!h-1.5 !w-1.5 !min-w-0 !border-0 !bg-indigo-500" />
-      )}
+      <Handle id="next" type="source" position={Position.Right} className={`${handleBase} !bg-indigo-500`} />
       {!isTrigger && (
-        <Handle id="error" type="source" position={Position.Bottom} className="!h-1.5 !w-1.5 !min-w-0 !border-0 !bg-red-500/80" />
+        <Handle id="error" type="source" position={Position.Bottom} className={`${handleBase} !bg-red-500/80`} />
       )}
     </div>
   );
@@ -205,6 +225,11 @@ const CONFIG_FIELDS: Record<FlowNodeType, FieldSpec[]> = {
   agent: [
     { key: 'persona', zh: '角色 (persona)', en: 'Persona', kind: 'text', placeholder: 'default / specialist-network / …' },
     { key: 'instruction', zh: '指令（支持 {{…}} 模板）', en: 'Instruction ({{…}} templates)', kind: 'textarea', placeholder: '诊断 {{trigger.host}} 上的磁盘告警…' },
+    { key: 'output_schema', zh: '输出 schema（可选，JSON Schema。声明后下游才能引用 structured 字段）', en: 'Output schema (optional; required for structured downstream refs)', kind: 'json' },
+  ],
+  llm: [
+    { key: 'system', zh: '系统提示（可选）', en: 'System prompt (optional)', kind: 'textarea', placeholder: '你是运维助手，简洁回答。' },
+    { key: 'prompt', zh: '提示词（支持 {{…}} 模板）', en: 'Prompt ({{…}} templates)', kind: 'textarea', placeholder: '把这段诊断总结成一句话：{{nodes.diag.output.answer}}' },
     { key: 'output_schema', zh: '输出 schema（可选，JSON Schema。声明后下游才能引用 structured 字段）', en: 'Output schema (optional; required for structured downstream refs)', kind: 'json' },
   ],
   tool: [
@@ -545,7 +570,9 @@ export default function FlowEditorPage() {
             }}
             onConnect={onConnect}
             onNodeClick={(_, n) => setSelectedID(n.id)}
+            onNodeDragStop={(_, n) => setSelectedID(n.id)}
             onPaneClick={() => setSelectedID(null)}
+            onSelectionChange={({ nodes: sel }) => { if (sel.length === 1) setSelectedID(sel[0].id); }}
             nodesDraggable={canWrite}
             nodesConnectable={canWrite}
             elementsSelectable
