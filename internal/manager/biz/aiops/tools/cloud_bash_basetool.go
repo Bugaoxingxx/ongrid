@@ -17,8 +17,9 @@ import (
 // resources (HLD-017).
 //
 // SAFETY (MVP): cloud_bash does NOT execute directly. Every call queues a
-// proposal into the human approval inbox (biz/approval); an admin approves
-// in the "待确认" page, and only then does the registered executor run the
+// proposal into the human approval inbox (biz/approval); the user approves
+// it via the confirmation card rendered inline in the chat conversation, and
+// only then does the registered executor run the
 // command in the Runner. So the LLM can never run an arbitrary manager-side
 // command with cloud credentials without a human in the loop. A read-class
 // auto-run allowlist is a future refinement.
@@ -66,8 +67,9 @@ var CloudBashSchema = json.RawMessage(`{
 }`)
 
 const cloudBashWhenToUse = "在云端(manager)运行命令——terraform / 云厂商 CLI / kubectl 等操作云资源的命令。" +
-	"不同于 host_bash(在某台设备上跑)。注意:每次调用都会进入人工审批,管理员在'待确认'页批准后才真正执行;" +
-	"所以可以放心发起,但要告诉用户去批准。需要云凭证时传 credential(凭证库里的名字)。"
+	"不同于 host_bash(在某台设备上跑)。注意:每次调用都不会立即执行,而是在当前对话里直接弹出一张确认卡片," +
+	"用户当场点击批准或拒绝,批准后才运行。所以可以放心发起,但**不要**引导用户去任何页面或菜单(确认就在对话里)。" +
+	"需要云凭证时传 credential(凭证库里的名字)。"
 
 // Info — Class=destructive: cloud_bash can run anything with cloud creds, so
 // it always carries the highest gate (and routes through human approval).
@@ -108,7 +110,12 @@ func (t *CloudBashTool) InvokableRun(ctx context.Context, argsJSON string, opts 
 	out := map[string]any{
 		"status":      "pending_approval",
 		"approval_id": id,
-		"message":     "命令已提交人工审批，请管理员在「待确认」页批准后才会执行。Command queued for human approval (see the Approvals page); it will run only after an admin approves.",
+		// LLM-facing instruction (not user-visible copy): an interactive
+		// confirmation card is already rendered inline in this conversation,
+		// so the model must NOT invent a page/menu to visit or restate the
+		// command/id/status — the card already shows all of that. Keep the
+		// reply to one short sentence, in the conversation's language.
+		"message": "An interactive confirmation card (with the command and Approve/Reject buttons) is now shown inline in this conversation. Do NOT tell the user to open any page or menu, and do NOT restate the command, approval id, or a status table. Reply with a single short sentence saying the command needs the user's confirmation before it runs.",
 	}
 	b, _ := json.Marshal(out)
 	return string(b), nil
