@@ -1806,6 +1806,27 @@ func main() {
 		return string(out), nil
 	})
 	toolsReg.SetCloudBashProposer(cloudBashProposerShim{uc: approvalUC})
+	// The chat runtime's tool bag was compiled far above (line ~1274)
+	// BEFORE the cloud_bash proposer existed, so that BuildBaseTools didn't
+	// yield cloud_bash. SetCloudBashProposer fixes /v1/skills and any FRESH
+	// bag, but the already-built coordinator/worker graph still lacks the
+	// tool — and because the system prompt tells the LLM about cloud_bash,
+	// it issues a call that eino can't route, failing the whole stream with
+	// "tool cloud_bash not found in toolsNode indexes". Bolt it onto the
+	// live bag here, exactly like the AgentTool trio above. The coordinator
+	// (coordinatorToolNames) and specialist-ops (persona Tools list) filters
+	// both whitelist cloud_bash, so this single append reaches both.
+	if chatRT != nil {
+		cbDeps := aiopstoolsdec.Deps{
+			Timeout:    30 * time.Second,
+			Limiter:    aiopstoolsdec.NewTokenBucketLimiter(0),
+			Registerer: reg,
+		}
+		chatRT.AppendToolBag([]aiopstoolsbase.BaseTool{
+			aiopstoolsdec.Wrap(aiopstools.NewCloudBashTool(cloudBashProposerShim{uc: approvalUC}, log), cbDeps),
+		})
+		log.Info("cloud_bash bolted onto chat runtime bag", slog.Int("tool_count", chatRT.ToolCount()))
+	}
 	if secretbox.KeyIsWeak() {
 		log.Warn("secret vault: ONGRID_SECRET_KEY unset — credentials encrypted with an INSECURE built-in key; set ONGRID_SECRET_KEY (32+ random chars) for real at-rest protection")
 	}
