@@ -83,14 +83,14 @@ var GetEdgeSummaryBatchSchema = json.RawMessage(`{
       "items": {"type": "integer"},
       "minItems": 1,
       "maxItems": 16,
-      "description": "设备 id 列表，一次最多 16 个。一次给多个 device_id 拿 metadata + host_load + 24h incidents 一锅。"
+      "description": "设备 id 列表，一次最多 16 个。一次给多个 device_id，把它们的 metadata + host_load + 24h incidents 一次性全拿回来（省得逐台单独调）。"
     }
   },
   "required": ["device_ids"]
 }`)
 
 // getEdgeSummaryWhenToUse — batch-first routing hint (N+15).
-const getEdgeSummaryWhenToUse = "一次给多个 device_id 拿 metadata + host_load + 24h incidents 一锅。" +
+const getEdgeSummaryWhenToUse = "一次给多个 device_id，把它们的 metadata + host_load + 24h incidents 一次性全拿回来（省得逐台单独调）。" +
 	"比 get_host_load + get_incident_detail 各自批量更省 LLM 轮次（每条 incidents 只回 trimmed envelope）。" +
 	"NOT for: 单设备深查（用 host_bash + ps + journalctl）/ 集群级聚合（用 rank_edges）/ " +
 	"诊断单个 incident 的 metric+log+trace 关联（用 correlate_incident）/ 列设备清单（用 query_devices）。"
