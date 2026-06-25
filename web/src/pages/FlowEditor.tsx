@@ -1213,8 +1213,12 @@ function ToolArgsForm({
     } else if (t.startsWith('{{')) {
       next[key] = raw; // template — resolved at run time, stays a string
     } else if (type === 'array' || type === 'object') {
+      // Quote bare {{…}} templates so "[{{ref}}]" parses as a real array of
+      // template strings (each resolved at run time) instead of one literal
+      // string. Idempotent: already-quoted templates re-quote cleanly.
+      const jsonish = t.replace(/"?\{\{[^{}]*\}\}"?/g, (m) => JSON.stringify(m.replace(/^"|"$/g, '')));
       try {
-        next[key] = JSON.parse(t);
+        next[key] = JSON.parse(jsonish);
       } catch {
         next[key] = raw; // let the user keep typing; tool will validate
       }
@@ -1231,7 +1235,12 @@ function ToolArgsForm({
   const display = (v: unknown): string => {
     if (v === undefined || v === null) return '';
     if (typeof v === 'string') return v;
-    if (Array.isArray(v) || typeof v === 'object') return JSON.stringify(v);
+    // Render {{…}} template elements unquoted so the input round-trips to what
+    // the user typed (e.g. [{{ref}}]), while non-template values stay JSON.
+    if (Array.isArray(v)) {
+      return '[' + v.map((el) => (typeof el === 'string' && el.trim().startsWith('{{') ? el : JSON.stringify(el))).join(', ') + ']';
+    }
+    if (typeof v === 'object') return JSON.stringify(v);
     return String(v);
   };
 
