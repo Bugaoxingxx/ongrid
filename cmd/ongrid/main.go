@@ -14,7 +14,10 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
 	crand "crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -2159,9 +2162,13 @@ func main() {
 		// serve_page: public read of an assistant-hosted HTML page (under /api
 		// so nginx proxies it to the manager). The random token IS the
 		// capability; id is validated to block path traversal.
-		api.Get("/pages/{id}", func(w http.ResponseWriter, r *http.Request) {
-			id := chi.URLParam(r, "id")
-			if !isHexToken(id) {
+		// Public share route: a minted, TTL-bounded token grants login-free
+		// read. Pages themselves are NOT public — in-app viewing is authed
+		// (GET /api/pages/{id} in the protected group); only an explicit share
+		// exposes a page off-platform, mirroring the report /r/{token} model.
+		api.Get("/p/{token}", func(w http.ResponseWriter, r *http.Request) {
+			id, ok := verifyPageShareToken(cfg.JWT.Secret, chi.URLParam(r, "token"))
+			if !ok {
 				http.NotFound(w, r)
 				return
 			}
@@ -2170,14 +2177,7 @@ func main() {
 				http.NotFound(w, r)
 				return
 			}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Header().Set("X-Content-Type-Options", "nosniff")
-			// The HTML is LLM-generated and served same-origin as the SPA. The
-			// sandbox directive loads it in an opaque origin with scripts
-			// disabled, so a malicious/buggy page can't read the SPA's JWT from
-			// localStorage. Inline styles + images still render.
-			w.Header().Set("Content-Security-Policy", "sandbox allow-popups allow-downloads")
-			_, _ = w.Write(b)
+			writePageHTML(w, b)
 		})
 		// (admin endpoints registered inside the protected group below)
 
@@ -2209,6 +2209,38 @@ func main() {
 					return
 				}
 				w.WriteHeader(http.StatusNoContent)
+			})
+			// Authed in-app read of a page (the SPA fetches this with its bearer
+			// and renders it via iframe srcdoc — the page is NOT public).
+			protected.Get("/pages/{id}", func(w http.ResponseWriter, r *http.Request) {
+				id := chi.URLParam(r, "id")
+				if !isHexToken(id) {
+					http.NotFound(w, r)
+					return
+				}
+				b, err := pageStore.readPageHTML(id)
+				if err != nil {
+					http.NotFound(w, r)
+					return
+				}
+				writePageHTML(w, b)
+			})
+			// Mint a TTL-bounded public share link for a page (off-platform,
+			// login-free) — mirrors POST /v1/reports/{id}/share.
+			protected.Post("/v1/pages/{id}/share", func(w http.ResponseWriter, r *http.Request) {
+				id := chi.URLParam(r, "id")
+				if _, err := pageStore.readPageHTML(id); err != nil {
+					http.NotFound(w, r)
+					return
+				}
+				exp := time.Now().Add(pageShareTTL)
+				tok := mintPageShareToken(cfg.JWT.Secret, id, exp)
+				w.Header().Set("content-type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"share_token": tok,
+					"path":        "/api/p/" + tok,
+					"expires_at":  exp.UTC().Format(time.RFC3339),
+				})
 			})
 			iamHandler.RegisterProtected(protected)
 			edgeHandler.Register(protected)
@@ -4213,6 +4245,62 @@ func extractHTMLTitle(b []byte) string {
 		return ""
 	}
 	return strings.TrimSpace(string(b)[i+7 : i+7+j])
+}
+
+// pageShareTTL bounds how long a minted page share link stays valid — matches
+// the report share TTL so the two share models behave the same.
+const pageShareTTL = 30 * 24 * time.Hour
+
+// mintPageShareToken returns a stateless signed token that grants
+// unauthenticated read of pageID until exp. Pages are file-based (no DB row to
+// hang a token on like reports), so the token carries its own claims:
+// base64url(pageID|expUnix).hmac. Deleting the page still revokes it (the serve
+// path checks the file exists); short TTL bounds exposure otherwise.
+func mintPageShareToken(secret, pageID string, exp time.Time) string {
+	body := pageID + "|" + strconv.FormatInt(exp.Unix(), 10)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(body))
+	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return base64.RawURLEncoding.EncodeToString([]byte(body)) + "." + sig
+}
+
+// verifyPageShareToken validates a share token's signature + expiry and returns
+// the page id it grants.
+func verifyPageShareToken(secret, token string) (string, bool) {
+	parts := strings.SplitN(token, ".", 2)
+	if len(parts) != 2 {
+		return "", false
+	}
+	bodyB, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return "", false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(bodyB)
+	want := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	if !hmac.Equal([]byte(want), []byte(parts[1])) {
+		return "", false
+	}
+	seg := strings.SplitN(string(bodyB), "|", 2)
+	if len(seg) != 2 || !isHexToken(seg[0]) {
+		return "", false
+	}
+	expUnix, err := strconv.ParseInt(seg[1], 10, 64)
+	if err != nil || time.Now().Unix() > expUnix {
+		return "", false
+	}
+	return seg[0], true
+}
+
+// writePageHTML serves hosted page bytes with the sandbox CSP. The HTML is
+// LLM-generated; the sandbox directive loads it in an opaque origin with
+// scripts disabled, so it can't read the SPA's JWT from localStorage. Inline
+// styles + images still render.
+func writePageHTML(w http.ResponseWriter, b []byte) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "sandbox allow-popups allow-downloads")
+	_, _ = w.Write(b)
 }
 
 // isHexToken guards the /pages/{id} route against path traversal — id must be

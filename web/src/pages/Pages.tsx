@@ -1,28 +1,27 @@
-// Pages — operations view for hosted "artifacts": the HTML pages the agent /
-// workflows generate via serve_page. Card grid with a live thumbnail of each
-// page, plus open / preview / delete. Page content is served publicly by token
-// at /api/pages/<id>; thumbnails + previews render in a sandboxed iframe
-// (scripts disabled, opaque origin) so an LLM-generated page can never touch the
-// SPA's session.
+// Pages — operations view for hosted "artifacts": pages the agent / workflows
+// generate via serve_page. Pages are private (authed) — thumbnails + preview
+// fetch the HTML with the bearer and render it via a sandboxed iframe srcdoc.
+// Sharing is an explicit, TTL-bounded mint that returns a public login-free link
+// (mirrors reports). Sandbox (iframe + server CSP) means an LLM page can never
+// touch the SPA session.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, ExternalLink, Eye, Loader2, Search, Share2, Trash2 } from 'lucide-react';
 
-import { deletePage, listPages, type HostedPage } from '@/api/pages';
+import { deletePage, fetchPageHTML, listPages, sharePage, type HostedPage } from '@/api/pages';
 import { useI18n } from '@/i18n/locale';
 import { useAuth } from '@/store/auth';
 import { PageHeader, Button, EmptyState } from '@/components/ui';
 import { Modal } from '@/components/Modal';
 
-// THUMB_W is the logical desktop width we render each page at before scaling it
-// down — so the thumbnail shows the desktop layout, not a mobile reflow.
 const THUMB_W = 1100;
 
-// PageThumb renders a hosted page as a scaled-down live thumbnail. We measure the
-// card width and scale a desktop-width iframe to fit; the iframe is sandboxed +
-// pointer-events-none so it's a static picture, not an interactive surface.
-function PageThumb({ url }: { url: string }) {
+// PageThumb renders a page as a scaled-down thumbnail: it fetches the HTML (the
+// route is authed) and draws it into a sandboxed srcdoc iframe scaled to the
+// card width, pointer-events-none so it's a static picture.
+function PageThumb({ id }: { id: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(0.3);
+  const [html, setHtml] = useState<string | null>(null);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -32,18 +31,28 @@ function PageThumb({ url }: { url: string }) {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+  useEffect(() => {
+    let alive = true;
+    fetchPageHTML(id)
+      .then((h) => alive && setHtml(h))
+      .catch(() => alive && setHtml('<!doctype html><body></body>'));
+    return () => {
+      alive = false;
+    };
+  }, [id]);
   return (
     <div ref={ref} className="relative h-40 w-full overflow-hidden bg-white">
-      <iframe
-        title="thumbnail"
-        src={url}
-        sandbox=""
-        tabIndex={-1}
-        scrolling="no"
-        loading="lazy"
-        className="pointer-events-none absolute left-0 top-0 origin-top-left border-0"
-        style={{ width: THUMB_W, height: 900, transform: `scale(${scale})` }}
-      />
+      {html != null && (
+        <iframe
+          title="thumbnail"
+          srcDoc={html}
+          sandbox=""
+          tabIndex={-1}
+          scrolling="no"
+          className="pointer-events-none absolute left-0 top-0 origin-top-left border-0"
+          style={{ width: THUMB_W, height: 900, transform: `scale(${scale})` }}
+        />
+      )}
     </div>
   );
 }
@@ -59,24 +68,9 @@ export default function PagesPage() {
   const [search, setSearch] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [preview, setPreview] = useState<HostedPage | null>(null);
+  const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-
-  // copyShare copies the absolute, login-free link — the page route is public
-  // (the token is the capability), so this works for anyone, on or off-platform.
-  const copyShare = async (p: HostedPage) => {
-    const link = window.location.origin + p.url;
-    try {
-      await navigator.clipboard.writeText(link);
-    } catch {
-      window.prompt(tr('复制此分享链接：', 'Copy this share link:'), link);
-    }
-    setCopiedId(p.id);
-    window.setTimeout(() => setCopiedId((c) => (c === p.id ? null : c)), 2000);
-  };
-  const shareHint = tr(
-    '复制公开链接：凭链接任何人可看、无需登录；删除该页即失效',
-    'Copy public link: anyone with it can view, no login; delete the page to revoke',
-  );
+  const [sharingId, setSharingId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -94,8 +88,24 @@ export default function PagesPage() {
     void refresh();
   }, [refresh]);
 
+  // Load preview HTML (authed) when a page is opened.
+  useEffect(() => {
+    if (!preview) {
+      setPreviewHtml(null);
+      return;
+    }
+    let alive = true;
+    setPreviewHtml(null);
+    fetchPageHTML(preview.id)
+      .then((h) => alive && setPreviewHtml(h))
+      .catch(() => alive && setPreviewHtml('<!doctype html><body style="font-family:sans-serif;padding:2rem;color:#888">加载失败 / failed to load</body>'));
+    return () => {
+      alive = false;
+    };
+  }, [preview]);
+
   const onDelete = async (p: HostedPage) => {
-    if (!window.confirm(tr(`删除页面「${p.title || p.id}」？链接将立即失效。`, `Delete page "${p.title || p.id}"? Its link dies immediately.`))) return;
+    if (!window.confirm(tr(`删除页面「${p.title || p.id}」？分享链接将立即失效。`, `Delete page "${p.title || p.id}"? Its share links die immediately.`))) return;
     setBusyId(p.id);
     try {
       await deletePage(p.id);
@@ -106,6 +116,30 @@ export default function PagesPage() {
       setBusyId(null);
     }
   };
+
+  // Share mints a TTL-bounded public link and copies the absolute URL.
+  const onShare = async (p: HostedPage) => {
+    setSharingId(p.id);
+    try {
+      const r = await sharePage(p.id);
+      const link = window.location.origin + r.path;
+      try {
+        await navigator.clipboard.writeText(link);
+      } catch {
+        window.prompt(tr('复制此公开分享链接：', 'Copy this public share link:'), link);
+      }
+      setCopiedId(p.id);
+      window.setTimeout(() => setCopiedId((c) => (c === p.id ? null : c)), 2200);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSharingId(null);
+    }
+  };
+  const shareHint = tr(
+    '生成 30 天有效的公开链接并复制：凭链接任何人可看、无需登录；删除该页即失效',
+    'Mint + copy a 30-day public link: anyone with it can view, no login; delete the page to revoke',
+  );
 
   const relTime = (iso: string) => {
     if (!iso) return '—';
@@ -183,7 +217,7 @@ export default function PagesPage() {
                   className="relative block w-full border-b border-zinc-800 text-left"
                   title={tr('预览', 'Preview')}
                 >
-                  <PageThumb url={p.url} />
+                  <PageThumb id={p.id} />
                   <span className="absolute inset-0 flex items-center justify-center bg-zinc-950/0 opacity-0 transition-opacity group-hover:bg-zinc-950/30 group-hover:opacity-100">
                     <span className="inline-flex items-center gap-1 rounded-md bg-zinc-900/90 px-2.5 py-1 text-xs font-medium text-zinc-100 ring-1 ring-inset ring-zinc-700">
                       <Eye size={13} /> {tr('预览', 'Preview')}
@@ -198,23 +232,16 @@ export default function PagesPage() {
                     <div className="mt-0.5 text-[11px] text-zinc-500">{relTime(p.created_at)}</div>
                   </div>
                   <div className="mt-auto flex items-center gap-1.5">
-                    <a
-                      href={p.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-                    >
-                      <ExternalLink size={13} /> {tr('打开', 'Open')}
-                    </a>
                     <button
                       type="button"
-                      onClick={() => void copyShare(p)}
+                      onClick={() => void onShare(p)}
+                      disabled={sharingId === p.id}
                       title={shareHint}
                       className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors ${
                         copiedId === p.id ? 'text-emerald-400' : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
                       }`}
                     >
-                      {copiedId === p.id ? <Check size={13} /> : <Share2 size={13} />}
+                      {sharingId === p.id ? <Loader2 size={13} className="animate-spin" /> : copiedId === p.id ? <Check size={13} /> : <Share2 size={13} />}
                       {copiedId === p.id ? tr('已复制', 'Copied') : tr('分享', 'Share')}
                     </button>
                     {canWrite && (
@@ -239,26 +266,30 @@ export default function PagesPage() {
         <Modal open onClose={() => setPreview(null)} size="lg" title={preview.title || tr('页面预览', 'Page preview')}>
           <div className="space-y-2">
             <div className="flex items-center gap-3 text-[11px] text-zinc-500">
-              <span className="truncate font-mono">{preview.url}</span>
+              <span className="truncate font-mono">{preview.id}</span>
               <button
                 type="button"
-                onClick={() => void copyShare(preview)}
+                onClick={() => void onShare(preview)}
+                disabled={sharingId === preview.id}
                 title={shareHint}
                 className={`ml-auto inline-flex shrink-0 items-center gap-1 ${copiedId === preview.id ? 'text-emerald-400' : 'text-indigo-400 hover:text-indigo-300'}`}
               >
-                {copiedId === preview.id ? <Check size={11} /> : <Share2 size={11} />}
-                {copiedId === preview.id ? tr('已复制', 'Copied') : tr('分享', 'Share')}
+                {sharingId === preview.id ? <Loader2 size={11} className="animate-spin" /> : copiedId === preview.id ? <Check size={11} /> : <Share2 size={11} />}
+                {copiedId === preview.id ? tr('已复制公开链接', 'Public link copied') : tr('生成分享链接', 'Share link')}
               </button>
-              <a href={preview.url} target="_blank" rel="noreferrer" className="inline-flex shrink-0 items-center gap-1 text-indigo-400 hover:text-indigo-300">
-                <ExternalLink size={11} /> {tr('新标签打开', 'Open in new tab')}
-              </a>
             </div>
-            <iframe
-              title={preview.title || 'page'}
-              src={preview.url}
-              sandbox=""
-              className="h-[60vh] w-full rounded-md border border-zinc-800 bg-white"
-            />
+            {previewHtml == null ? (
+              <div className="flex h-[60vh] w-full items-center justify-center rounded-md border border-zinc-800 bg-white text-xs text-zinc-400">
+                <Loader2 size={16} className="mr-2 animate-spin" /> {tr('加载中…', 'Loading…')}
+              </div>
+            ) : (
+              <iframe
+                title={preview.title || 'page'}
+                srcDoc={previewHtml}
+                sandbox=""
+                className="h-[60vh] w-full rounded-md border border-zinc-800 bg-white"
+              />
+            )}
           </div>
         </Modal>
       )}

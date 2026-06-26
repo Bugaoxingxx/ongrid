@@ -1021,13 +1021,14 @@ export default function FlowEditorPage() {
                     </div>
                     {nodePageURL(n.output) && (
                       <a
-                        href={nodePageURL(n.output)!}
+                        href="/pages"
                         target="_blank"
                         rel="noreferrer"
                         onClick={(e) => e.stopPropagation()}
+                        title={tr('页面已托管（私有）— 在 运营→产物 里查看 / 分享', 'Page hosted (private) — view / share it under Operations → Artifacts')}
                         className="mt-1.5 inline-flex items-center gap-1 rounded-md border border-indigo-500/40 bg-indigo-500/10 px-2 py-1 text-[11px] font-medium text-indigo-300 transition-colors hover:bg-indigo-500/20"
                       >
-                        <ExternalLink size={11} /> {tr('打开生成的网页', 'Open generated page')}
+                        <ExternalLink size={11} /> {tr('在「产物」中查看', 'View in Artifacts')}
                       </a>
                     )}
                     {n.error && <div title={n.error} className="mt-1 break-all text-[11px] text-red-400">{friendlyFlowError(n.error, tr)}</div>}
